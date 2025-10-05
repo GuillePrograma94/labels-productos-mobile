@@ -72,7 +72,8 @@ class BarcodeScanner {
             scannerVideo: document.getElementById('scannerVideo'),
             scannerResult: document.getElementById('scannerResult'),
             detectedCode: document.getElementById('detectedCode'),
-            searchDetectedBtn: document.getElementById('searchDetectedBtn')
+            searchDetectedBtn: document.getElementById('searchDetectedBtn'),
+            capturePhotoBtn: document.getElementById('capturePhotoBtn')
         };
     }
 
@@ -85,6 +86,9 @@ class BarcodeScanner {
         
         // Buscar código detectado
         this.elements.searchDetectedBtn.addEventListener('click', () => this.searchDetectedCode());
+        
+        // Hacer foto manual
+        this.elements.capturePhotoBtn.addEventListener('click', () => this.captureAndDecode());
         
         // Cerrar modal al hacer clic fuera
         this.elements.scannerModal.addEventListener('click', (e) => {
@@ -334,6 +338,79 @@ class BarcodeScanner {
         this.flashEnabled = false;
         
         console.log('📷 Escáner cerrado');
+    }
+
+    /**
+     * Captura una foto del video actual y fuerza la decodificación
+     */
+    async captureAndDecode() {
+        try {
+            if (!this.elements.scannerVideo || !this.codeReader) {
+                console.error('❌ Video o CodeReader no disponible');
+                return;
+            }
+
+            console.log('📸 Capturando foto para decodificación manual...');
+            
+            // Cambiar texto del botón temporalmente
+            const originalText = this.elements.capturePhotoBtn.textContent;
+            this.elements.capturePhotoBtn.textContent = '⏳ Procesando...';
+            this.elements.capturePhotoBtn.disabled = true;
+
+            // Crear canvas para capturar el frame actual del video
+            const canvas = document.createElement('canvas');
+            const video = this.elements.scannerVideo;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Convertir canvas a blob
+            canvas.toBlob(async (blob) => {
+                try {
+                    // Decodificar usando ZXing
+                    const result = await this.codeReader.decodeFromImageElement(canvas);
+                    
+                    if (result && result.text) {
+                        console.log('✅ Código detectado manualmente:', result.text);
+                        this.onCodeDetected(result.text);
+                    } else {
+                        console.log('❌ No se detectó ningún código en la imagen');
+                        this.showTemporaryMessage('No se detectó código. Intenta de nuevo.');
+                    }
+                } catch (error) {
+                    console.warn('⚠️ No se pudo decodificar:', error);
+                    this.showTemporaryMessage('No se detectó código. Asegúrate de que esté dentro del marco.');
+                } finally {
+                    // Restaurar botón
+                    this.elements.capturePhotoBtn.textContent = originalText;
+                    this.elements.capturePhotoBtn.disabled = false;
+                }
+            }, 'image/png');
+
+        } catch (error) {
+            console.error('❌ Error al capturar foto:', error);
+            this.elements.capturePhotoBtn.textContent = '📷 Hacer Foto';
+            this.elements.capturePhotoBtn.disabled = false;
+            this.showTemporaryMessage('Error al procesar la foto');
+        }
+    }
+
+    /**
+     * Muestra un mensaje temporal en las instrucciones del scanner
+     */
+    showTemporaryMessage(message) {
+        const instructions = document.querySelector('.scanner-instructions');
+        if (instructions) {
+            const originalText = instructions.textContent;
+            instructions.textContent = message;
+            instructions.style.color = '#ff6b6b';
+            
+            setTimeout(() => {
+                instructions.textContent = originalText;
+                instructions.style.color = '';
+            }, 3000);
+        }
     }
 }
 
