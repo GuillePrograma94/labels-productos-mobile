@@ -249,20 +249,15 @@ class StorageManager {
 
     /**
      * Búsqueda ultra-optimizada de dos pasos
-     * @param {string} codeQuery - Código a buscar
-     * @param {string} descriptionQuery - Descripción a buscar
-     * @param {number} limit - Límite de resultados
-     * @param {boolean} exactMatch - Si es true, busca coincidencia exacta (desde escáner)
      */
-    async searchProducts(codeQuery, descriptionQuery, limit = 50, exactMatch = false) {
+    async searchProducts(codeQuery, descriptionQuery, limit = 50) {
         try {
-            const searchMode = exactMatch ? 'EXACTA (escáner)' : 'optimizada';
-            console.log(`🔍 Iniciando búsqueda ${searchMode}:`, { codeQuery, descriptionQuery });
+            console.log('🔍 Iniciando búsqueda optimizada:', { codeQuery, descriptionQuery });
             
             // Paso 1: Filtro rápido por código (SKU + EAN)
             let candidates = [];
             if (codeQuery && codeQuery.trim()) {
-                candidates = await this.searchByCodeOptimized(codeQuery.trim(), exactMatch);
+                candidates = await this.searchByCodeOptimized(codeQuery.trim());
                 console.log(`📊 Paso 1: Encontrados ${candidates.length} candidatos por código`);
             } else {
                 // Si no hay código, obtener todos los productos
@@ -292,10 +287,8 @@ class StorageManager {
 
     /**
      * Paso 1: Búsqueda ultra-rápida por código usando índices de IndexedDB
-     * @param {string} codeQuery - Código a buscar
-     * @param {boolean} exactMatch - Si es true, solo coincidencias exactas
      */
-    async searchByCodeOptimized(codeQuery, exactMatch = false) {
+    async searchByCodeOptimized(codeQuery) {
         try {
             const results = new Set();
             const processedCodes = new Set();
@@ -304,7 +297,7 @@ class StorageManager {
             const normalizedCode = this.normalizeText(codeQuery);
             
             // Buscar en códigos principales (SKU)
-            const productos = await this.searchInProductos(normalizedCode, exactMatch);
+            const productos = await this.searchInProductos(normalizedCode);
             productos.forEach(producto => {
                 results.add(producto.codigo);
                 processedCodes.add(producto.codigo);
@@ -312,7 +305,7 @@ class StorageManager {
             
             // Buscar en códigos secundarios (EAN) solo si no hay muchos resultados
             if (results.size < 10) {
-                const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode, exactMatch);
+                const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode);
                 for (const codigoSec of codigosSecundarios) {
                     if (!processedCodes.has(codigoSec.codigo_principal)) {
                         results.add(codigoSec.codigo_principal);
@@ -333,10 +326,8 @@ class StorageManager {
 
     /**
      * Busca en la tabla productos usando índices
-     * @param {string} codeQuery - Código normalizado a buscar
-     * @param {boolean} exactMatch - Si es true, solo coincidencias exactas
      */
-    async searchInProductos(codeQuery, exactMatch = false) {
+    async searchInProductos(codeQuery) {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction(['productos'], 'readonly');
             const store = transaction.objectStore('productos');
@@ -344,16 +335,9 @@ class StorageManager {
             
             request.onsuccess = () => {
                 const productos = request.result;
-                const matches = productos.filter(producto => {
-                    const normalizedCodigo = this.normalizeText(producto.codigo);
-                    if (exactMatch) {
-                        // Búsqueda exacta: el código normalizado debe ser idéntico
-                        return normalizedCodigo === codeQuery;
-                    } else {
-                        // Búsqueda parcial: el código contiene la query
-                        return normalizedCodigo.includes(codeQuery);
-                    }
-                });
+                const matches = productos.filter(producto => 
+                    this.normalizeText(producto.codigo).includes(codeQuery)
+                );
                 resolve(matches);
             };
             
@@ -363,10 +347,8 @@ class StorageManager {
 
     /**
      * Busca en la tabla codigos_secundarios usando índices
-     * @param {string} codeQuery - Código normalizado a buscar
-     * @param {boolean} exactMatch - Si es true, solo coincidencias exactas
      */
-    async searchInCodigosSecundarios(codeQuery, exactMatch = false) {
+    async searchInCodigosSecundarios(codeQuery) {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction(['codigos_secundarios'], 'readonly');
             const store = transaction.objectStore('codigos_secundarios');
@@ -374,16 +356,9 @@ class StorageManager {
             
             request.onsuccess = () => {
                 const codigos = request.result;
-                const matches = codigos.filter(codigo => {
-                    const normalizedCodigoSec = this.normalizeText(codigo.codigo_secundario);
-                    if (exactMatch) {
-                        // Búsqueda exacta: el código secundario normalizado debe ser idéntico
-                        return normalizedCodigoSec === codeQuery;
-                    } else {
-                        // Búsqueda parcial: el código secundario contiene la query
-                        return normalizedCodigoSec.includes(codeQuery);
-                    }
-                });
+                const matches = codigos.filter(codigo => 
+                    this.normalizeText(codigo.codigo_secundario).includes(codeQuery)
+                );
                 resolve(matches);
             };
             
