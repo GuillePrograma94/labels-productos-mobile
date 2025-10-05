@@ -274,7 +274,7 @@ class BarcodeScanner {
             
             // Buscar productos con este código específico
             try {
-                const results = await window.storageManager.searchProducts(code, '', 10);
+                const results = await window.storageManager.searchProductsForScan(code);
                 
                 if (results.length === 1) {
                     // Si hay exactamente un producto, añadirlo automáticamente

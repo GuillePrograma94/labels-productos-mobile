@@ -20,6 +20,73 @@ class StorageManager {
     }
 
     /**
+     * Búsqueda para escáner: primero coincidencia exacta (código principal o secundario),
+     * si no hay exacta, devolver por prefijo (startsWith) en principal/secundario.
+     */
+    async searchProductsForScan(scannedCode) {
+        try {
+            if (!scannedCode || !scannedCode.trim()) return [];
+            const normalized = this.normalizeText(scannedCode.trim());
+
+            const [productos, codigosSec] = await Promise.all([
+                this.getProducts(),
+                this.getSecondaryCodes()
+            ]);
+
+            const normalizedPrimaryMap = new Map(); // codigo_normalizado -> producto
+            for (const p of productos) {
+                normalizedPrimaryMap.set(this.normalizeText(p.codigo), p);
+            }
+
+            // 1) Coincidencia exacta principal
+            const exact = [];
+            const seen = new Set();
+            const pExact = normalizedPrimaryMap.get(normalized);
+            if (pExact) {
+                exact.push(pExact);
+                seen.add(pExact.codigo);
+            }
+
+            // 2) Coincidencia exacta secundaria -> principal
+            for (const sec of codigosSec) {
+                if (this.normalizeText(sec.codigo_secundario) === normalized) {
+                    const principal = productos.find(p => p.codigo === sec.codigo_principal);
+                    if (principal && !seen.has(principal.codigo)) {
+                        exact.push(principal);
+                        seen.add(principal.codigo);
+                    }
+                }
+            }
+
+            if (exact.length > 0) return exact;
+
+            // 3) Prefijo en principal
+            const prefix = [];
+            for (const p of productos) {
+                if (this.normalizeText(p.codigo).startsWith(normalized) && !seen.has(p.codigo)) {
+                    prefix.push(p);
+                    seen.add(p.codigo);
+                }
+            }
+
+            // 4) Prefijo en secundarios -> principal
+            for (const sec of codigosSec) {
+                if (this.normalizeText(sec.codigo_secundario).startsWith(normalized)) {
+                    const principal = productos.find(p => p.codigo === sec.codigo_principal);
+                    if (principal && !seen.has(principal.codigo)) {
+                        prefix.push(principal);
+                        seen.add(principal.codigo);
+                    }
+                }
+            }
+
+            return prefix;
+        } catch (e) {
+            console.error('❌ Error en searchProductsForScan:', e);
+            return [];
+        }
+    }
+    /**
      * Inicializa la base de datos IndexedDB
      */
     async initialize() {
