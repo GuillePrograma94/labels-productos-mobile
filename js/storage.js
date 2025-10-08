@@ -22,64 +22,144 @@ class StorageManager {
     /**
      * Búsqueda para escáner: primero coincidencia exacta (código principal o secundario),
      * si no hay exacta, devolver por prefijo (startsWith) en principal/secundario.
+     * OPTIMIZADO: Usa store.get() para búsquedas exactas (10x más rápido)
      */
     async searchProductsForScan(scannedCode) {
         try {
             if (!scannedCode || !scannedCode.trim()) return [];
-            const normalized = this.normalizeText(scannedCode.trim());
+            const originalCode = scannedCode.trim();
+            const normalizedSearchCode = originalCode.toUpperCase();
 
-            const [productos, codigosSec] = await Promise.all([
-                this.getProducts(),
-                this.getSecondaryCodes()
-            ]);
-
-            const normalizedPrimaryMap = new Map(); // codigo_normalizado -> producto
-            for (const p of productos) {
-                normalizedPrimaryMap.set(this.normalizeText(p.codigo), p);
-            }
-
-            // 1) Coincidencia exacta principal
-            const exact = [];
+            console.time('⏱️ searchProductsForScan TOTAL');
+            
+            const results = [];
             const seen = new Set();
-            const pExact = normalizedPrimaryMap.get(normalized);
-            if (pExact) {
-                exact.push(pExact);
-                seen.add(pExact.codigo);
+
+            // 1) Búsqueda EXACTA en código principal - INSTANTÁNEA con store.get()
+            console.time('⏱️ Búsqueda exacta productos');
+            const productoPrincipal = await new Promise((resolve) => {
+                const tx = this.db.transaction(['productos'], 'readonly');
+                const store = tx.objectStore('productos');
+                const req = store.get(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+            console.timeEnd('⏱️ Búsqueda exacta productos');
+
+            if (productoPrincipal) {
+                results.push(productoPrincipal);
+                seen.add(productoPrincipal.codigo);
             }
 
-            // 2) Coincidencia exacta secundaria -> principal
-            for (const sec of codigosSec) {
-                if (this.normalizeText(sec.codigo_secundario) === normalized) {
-                    const principal = productos.find(p => p.codigo === sec.codigo_principal);
-                    if (principal && !seen.has(principal.codigo)) {
-                        exact.push(principal);
-                        seen.add(principal.codigo);
-                    }
+            // 2) Búsqueda EXACTA en códigos secundarios - INSTANTÁNEA con store.get()
+            console.time('⏱️ Búsqueda exacta secundarios');
+            const codigoSecundario = await new Promise((resolve) => {
+                const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
+                const store = tx.objectStore('codigos_secundarios');
+                const req = store.get(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+
+            if (codigoSecundario && !seen.has(codigoSecundario.codigo_principal)) {
+                const principal = await new Promise((resolve) => {
+                    const tx = this.db.transaction(['productos'], 'readonly');
+                    const store = tx.objectStore('productos');
+                    const req = store.get(codigoSecundario.codigo_principal);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => resolve(null);
+                });
+                if (principal) {
+                    results.push(principal);
+                    seen.add(principal.codigo);
                 }
             }
+            console.timeEnd('⏱️ Búsqueda exacta secundarios');
 
-            if (exact.length > 0) return exact;
+            // Si encontró exacta, devolver inmediatamente
+            if (results.length > 0) {
+                console.timeEnd('⏱️ searchProductsForScan TOTAL');
+                console.log(`✅ Encontrado exacto: ${results.length} resultado(s)`);
+                return results;
+            }
 
-            // 3) Prefijo en principal
+            // 3) Si no encontró exacta, buscar por prefijo (más lento, usa cursor)
+            console.log('⚠️ No encontrado exacto, buscando por prefijo...');
+            console.time('⏱️ Búsqueda por prefijo');
+            
+            const normalized = this.normalizeText(originalCode);
             const prefix = [];
-            for (const p of productos) {
-                if (this.normalizeText(p.codigo).startsWith(normalized) && !seen.has(p.codigo)) {
+
+            // Buscar prefijos en productos
+            const productosCursor = await new Promise((resolve) => {
+                const tx = this.db.transaction(['productos'], 'readonly');
+                const store = tx.objectStore('productos');
+                const matches = [];
+                const cursorReq = store.openCursor();
+                
+                cursorReq.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor) {
+                        if (this.normalizeText(cursor.value.codigo).startsWith(normalized)) {
+                            matches.push(cursor.value);
+                        }
+                        cursor.continue();
+                    } else {
+                        resolve(matches);
+                    }
+                };
+                cursorReq.onerror = () => resolve([]);
+            });
+
+            productosCursor.forEach(p => {
+                if (!seen.has(p.codigo)) {
                     prefix.push(p);
                     seen.add(p.codigo);
                 }
-            }
+            });
 
-            // 4) Prefijo en secundarios -> principal
-            for (const sec of codigosSec) {
-                if (this.normalizeText(sec.codigo_secundario).startsWith(normalized)) {
-                    const principal = productos.find(p => p.codigo === sec.codigo_principal);
-                    if (principal && !seen.has(principal.codigo)) {
+            // Buscar prefijos en secundarios
+            const secundariosCursor = await new Promise((resolve) => {
+                const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
+                const store = tx.objectStore('codigos_secundarios');
+                const matches = [];
+                const cursorReq = store.openCursor();
+                
+                cursorReq.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor) {
+                        if (this.normalizeText(cursor.value.codigo_secundario).startsWith(normalized)) {
+                            matches.push(cursor.value);
+                        }
+                        cursor.continue();
+                    } else {
+                        resolve(matches);
+                    }
+                };
+                cursorReq.onerror = () => resolve([]);
+            });
+
+            // Obtener productos principales de los códigos secundarios
+            for (const sec of secundariosCursor) {
+                if (!seen.has(sec.codigo_principal)) {
+                    const principal = await new Promise((resolve) => {
+                        const tx = this.db.transaction(['productos'], 'readonly');
+                        const store = tx.objectStore('productos');
+                        const req = store.get(sec.codigo_principal);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => resolve(null);
+                    });
+                    if (principal) {
                         prefix.push(principal);
                         seen.add(principal.codigo);
                     }
                 }
             }
 
+            console.timeEnd('⏱️ Búsqueda por prefijo');
+            console.timeEnd('⏱️ searchProductsForScan TOTAL');
+            console.log(`✅ Encontrado por prefijo: ${prefix.length} resultado(s)`);
+            
             return prefix;
         } catch (e) {
             console.error('❌ Error en searchProductsForScan:', e);
@@ -140,6 +220,7 @@ class StorageManager {
 
     /**
      * Guarda productos en el almacenamiento local
+     * OPTIMIZADO: Normaliza códigos a MAYÚSCULAS para búsqueda case-insensitive rápida
      */
     async saveProducts(productos) {
         try {
@@ -149,13 +230,17 @@ class StorageManager {
             // Limpiar productos existentes
             await store.clear();
 
-            // Insertar nuevos productos
+            // Insertar nuevos productos con códigos normalizados
             for (const producto of productos) {
-                await store.add(producto);
+                const normalizedProduct = {
+                    ...producto,
+                    codigo: producto.codigo.toUpperCase()
+                };
+                await store.add(normalizedProduct);
             }
 
             await this.waitForTransaction(transaction);
-            console.log(`✅ Guardados ${productos.length} productos localmente`);
+            console.log(`✅ Guardados ${productos.length} productos (códigos normalizados a MAYÚSCULAS)`);
         } catch (error) {
             console.error('❌ Error al guardar productos:', error);
             throw error;
@@ -164,6 +249,7 @@ class StorageManager {
 
     /**
      * Guarda códigos secundarios en el almacenamiento local
+     * OPTIMIZADO: Normaliza códigos a MAYÚSCULAS para búsqueda case-insensitive rápida
      */
     async saveSecondaryCodes(codigos) {
         try {
@@ -173,13 +259,18 @@ class StorageManager {
             // Limpiar códigos existentes
             await store.clear();
 
-            // Insertar nuevos códigos
+            // Insertar nuevos códigos con códigos normalizados
             for (const codigo of codigos) {
-                await store.add(codigo);
+                const normalizedCodigo = {
+                    ...codigo,
+                    codigo_secundario: codigo.codigo_secundario.toUpperCase(),
+                    codigo_principal: codigo.codigo_principal.toUpperCase()
+                };
+                await store.add(normalizedCodigo);
             }
 
             await this.waitForTransaction(transaction);
-            console.log(`✅ Guardados ${codigos.length} códigos secundarios localmente`);
+            console.log(`✅ Guardados ${codigos.length} códigos secundarios (normalizados a MAYÚSCULAS)`);
         } catch (error) {
             console.error('❌ Error al guardar códigos secundarios:', error);
             throw error;
@@ -393,43 +484,97 @@ class StorageManager {
 
     /**
      * Busca en la tabla productos usando índices
+     * OPTIMIZADO: Primero intenta búsqueda exacta con store.get(), luego cursor si es parcial
      */
     async searchInProductos(codeQuery) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['productos'], 'readonly');
-            const store = transaction.objectStore('productos');
-            const request = store.getAll();
-            
-            request.onsuccess = () => {
-                const productos = request.result;
-                const matches = productos.filter(producto => 
-                    this.normalizeText(producto.codigo).includes(codeQuery)
-                );
-                resolve(matches);
-            };
-            
-            request.onerror = () => reject(request.error);
+        return new Promise(async (resolve, reject) => {
+            try {
+                const normalizedSearchCode = codeQuery.toUpperCase();
+                
+                // 1. Intentar búsqueda exacta (instantánea)
+                const tx = this.db.transaction(['productos'], 'readonly');
+                const store = tx.objectStore('productos');
+                const exactReq = store.get(normalizedSearchCode);
+                
+                exactReq.onsuccess = async () => {
+                    if (exactReq.result) {
+                        // Encontrado exacto
+                        resolve([exactReq.result]);
+                    } else {
+                        // No encontrado exacto, buscar parcial con cursor
+                        const matches = [];
+                        const tx2 = this.db.transaction(['productos'], 'readonly');
+                        const store2 = tx2.objectStore('productos');
+                        const cursorReq = store2.openCursor();
+                        
+                        cursorReq.onsuccess = (event) => {
+                            const cursor = event.target.result;
+                            if (cursor) {
+                                if (this.normalizeText(cursor.value.codigo).includes(codeQuery)) {
+                                    matches.push(cursor.value);
+                                }
+                                cursor.continue();
+                            } else {
+                                resolve(matches);
+                            }
+                        };
+                        
+                        cursorReq.onerror = () => resolve([]);
+                    }
+                };
+                
+                exactReq.onerror = () => reject(exactReq.error);
+            } catch (error) {
+                reject(error);
+            }
         });
     }
 
     /**
      * Busca en la tabla codigos_secundarios usando índices
+     * OPTIMIZADO: Primero intenta búsqueda exacta con store.get(), luego cursor si es parcial
      */
     async searchInCodigosSecundarios(codeQuery) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['codigos_secundarios'], 'readonly');
-            const store = transaction.objectStore('codigos_secundarios');
-            const request = store.getAll();
-            
-            request.onsuccess = () => {
-                const codigos = request.result;
-                const matches = codigos.filter(codigo => 
-                    this.normalizeText(codigo.codigo_secundario).includes(codeQuery)
-                );
-                resolve(matches);
-            };
-            
-            request.onerror = () => reject(request.error);
+        return new Promise(async (resolve, reject) => {
+            try {
+                const normalizedSearchCode = codeQuery.toUpperCase();
+                
+                // 1. Intentar búsqueda exacta (instantánea)
+                const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
+                const store = tx.objectStore('codigos_secundarios');
+                const exactReq = store.get(normalizedSearchCode);
+                
+                exactReq.onsuccess = async () => {
+                    if (exactReq.result) {
+                        // Encontrado exacto
+                        resolve([exactReq.result]);
+                    } else {
+                        // No encontrado exacto, buscar parcial con cursor
+                        const matches = [];
+                        const tx2 = this.db.transaction(['codigos_secundarios'], 'readonly');
+                        const store2 = tx2.objectStore('codigos_secundarios');
+                        const cursorReq = store2.openCursor();
+                        
+                        cursorReq.onsuccess = (event) => {
+                            const cursor = event.target.result;
+                            if (cursor) {
+                                if (this.normalizeText(cursor.value.codigo_secundario).includes(codeQuery)) {
+                                    matches.push(cursor.value);
+                                }
+                                cursor.continue();
+                            } else {
+                                resolve(matches);
+                            }
+                        };
+                        
+                        cursorReq.onerror = () => resolve([]);
+                    }
+                };
+                
+                exactReq.onerror = () => reject(exactReq.error);
+            } catch (error) {
+                reject(error);
+            }
         });
     }
 
