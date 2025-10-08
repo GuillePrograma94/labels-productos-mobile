@@ -448,6 +448,8 @@ class StorageManager {
      */
     async searchByCodeOptimized(codeQuery) {
         try {
+            console.time('⏱️ searchByCodeOptimized TOTAL');
+            
             const results = new Set();
             const processedCodes = new Set();
             
@@ -455,7 +457,10 @@ class StorageManager {
             const normalizedCode = this.normalizeText(codeQuery);
             
             // Buscar en códigos principales (SKU)
+            console.time('⏱️ Búsqueda en productos');
             const productos = await this.searchInProductos(normalizedCode);
+            console.timeEnd('⏱️ Búsqueda en productos');
+            
             productos.forEach(producto => {
                 results.add(producto.codigo);
                 processedCodes.add(producto.codigo);
@@ -463,7 +468,10 @@ class StorageManager {
             
             // Buscar en códigos secundarios (EAN) solo si no hay muchos resultados
             if (results.size < 10) {
+                console.time('⏱️ Búsqueda en secundarios');
                 const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode);
+                console.timeEnd('⏱️ Búsqueda en secundarios');
+                
                 for (const codigoSec of codigosSecundarios) {
                     if (!processedCodes.has(codigoSec.codigo_principal)) {
                         results.add(codigoSec.codigo_principal);
@@ -474,6 +482,10 @@ class StorageManager {
             
             // Obtener productos completos
             const productosCompletos = await this.getProductsByCodes(Array.from(results));
+            
+            console.timeEnd('⏱️ searchByCodeOptimized TOTAL');
+            console.log(`✅ Encontrados ${productosCompletos.length} productos por código`);
+            
             return productosCompletos;
             
         } catch (error) {

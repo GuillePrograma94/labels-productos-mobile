@@ -466,10 +466,14 @@ class StorageManager {
                 processedCodes.add(producto.codigo);
             });
             
+            const foundInProductos = results.size > 0;
+            
             // Buscar en códigos secundarios (EAN) solo si no hay muchos resultados
             if (results.size < 10) {
                 console.time('⏱️ Búsqueda en secundarios');
-                const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode);
+                // Si ya encontró en productos, solo búsqueda exacta (no parcial)
+                // Si NO encontró nada, permitir búsqueda parcial
+                const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode, foundInProductos);
                 console.timeEnd('⏱️ Búsqueda en secundarios');
                 
                 for (const codigoSec of codigosSecundarios) {
@@ -544,24 +548,32 @@ class StorageManager {
 
     /**
      * Busca en la tabla codigos_secundarios usando índices
-     * OPTIMIZADO: Primero intenta búsqueda exacta con store.get(), luego cursor si es parcial
+     * OPTIMIZADO: Búsqueda exacta primero, parcial solo si no encontró y si no hay resultados previos
+     * @param {string} codeQuery - Código a buscar
+     * @param {boolean} skipPartialSearch - Si true, omite búsqueda parcial (porque ya encontró en productos)
      */
-    async searchInCodigosSecundarios(codeQuery) {
+    async searchInCodigosSecundarios(codeQuery, skipPartialSearch = false) {
         return new Promise(async (resolve, reject) => {
             try {
                 const normalizedSearchCode = codeQuery.toUpperCase();
                 
-                // 1. Intentar búsqueda exacta (instantánea)
+                // 1. Búsqueda EXACTA (instantánea)
                 const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
                 const store = tx.objectStore('codigos_secundarios');
                 const exactReq = store.get(normalizedSearchCode);
                 
-                exactReq.onsuccess = async () => {
+                exactReq.onsuccess = () => {
                     if (exactReq.result) {
-                        // Encontrado exacto
+                        // Encontrado exacto → TERMINAR
+                        console.log('✅ Código secundario encontrado exacto');
                         resolve([exactReq.result]);
+                    } else if (skipPartialSearch) {
+                        // No encontrado exacto, pero ya había resultados en productos → NO buscar parcial
+                        console.log('⚡ Omitiendo búsqueda parcial en secundarios (ya hay resultados)');
+                        resolve([]);
                     } else {
-                        // No encontrado exacto, buscar parcial con cursor
+                        // No encontrado exacto y NO hay resultados previos → Buscar parcial
+                        console.log('🔍 Búsqueda parcial en secundarios (no encontrado exacto y sin resultados previos)');
                         const matches = [];
                         const tx2 = this.db.transaction(['codigos_secundarios'], 'readonly');
                         const store2 = tx2.objectStore('codigos_secundarios');
