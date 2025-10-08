@@ -407,27 +407,59 @@ class StorageManager {
 
     /**
      * Búsqueda ultra-optimizada de dos pasos
+     * OPTIMIZACIÓN: Cuando hay código Y descripción, primero filtra por descripción (rápido)
+     * y luego por código en memoria (mucho más rápido que buscar en BD)
      */
     async searchProducts(codeQuery, descriptionQuery, limit = 50) {
         try {
             console.log('🔍 Iniciando búsqueda optimizada:', { codeQuery, descriptionQuery });
             
-            // Paso 1: Filtro rápido por código (SKU + EAN)
-            let candidates = [];
-            if (codeQuery && codeQuery.trim()) {
-                candidates = await this.searchByCodeOptimized(codeQuery.trim());
-                console.log(`📊 Paso 1: Encontrados ${candidates.length} candidatos por código`);
-            } else {
-                // Si no hay código, obtener todos los productos
-                candidates = await this.getProducts();
-                console.log(`📊 Paso 1: Sin filtro de código, ${candidates.length} productos totales`);
-            }
+            const hasCode = codeQuery && codeQuery.trim();
+            const hasDescription = descriptionQuery && descriptionQuery.trim();
             
-            // Paso 2: Filtro por descripción (solo en candidatos del Paso 1)
-            let results = candidates;
-            if (descriptionQuery && descriptionQuery.trim() && candidates.length > 0) {
+            let candidates = [];
+            let results = [];
+            
+            // ESTRATEGIA OPTIMIZADA: Si hay AMBOS criterios, invertir el orden
+            if (hasCode && hasDescription) {
+                console.log('🚀 Búsqueda con AMBOS criterios: descripción primero (OPTIMIZADO)');
+                
+                // Paso 1: Obtener todos los productos
+                console.time('⏱️ Obtener productos');
+                candidates = await this.getProducts();
+                console.timeEnd('⏱️ Obtener productos');
+                console.log(`📊 Paso 1: ${candidates.length} productos totales`);
+                
+                // Paso 2: Filtrar por descripción (rápido en memoria)
+                console.time('⏱️ Filtrar por descripción');
                 results = this.filterByDescription(candidates, descriptionQuery.trim());
-                console.log(`📊 Paso 2: Filtrados ${results.length} productos por descripción`);
+                console.timeEnd('⏱️ Filtrar por descripción');
+                console.log(`📊 Paso 2: ${results.length} productos después de filtrar por descripción`);
+                
+                // Paso 3: Filtrar por código en memoria (muy rápido porque la lista ya está reducida)
+                console.time('⏱️ Filtrar por código en memoria');
+                results = this.filterByCodeInMemory(results, codeQuery.trim());
+                console.timeEnd('⏱️ Filtrar por código en memoria');
+                console.log(`📊 Paso 3: ${results.length} productos después de filtrar por código`);
+                
+            } else if (hasCode) {
+                // Solo código: usar búsqueda optimizada en BD
+                console.log('🔍 Búsqueda SOLO por código');
+                candidates = await this.searchByCodeOptimized(codeQuery.trim());
+                console.log(`📊 Encontrados ${candidates.length} candidatos por código`);
+                results = candidates;
+                
+            } else if (hasDescription) {
+                // Solo descripción: obtener todos y filtrar
+                console.log('🔍 Búsqueda SOLO por descripción');
+                candidates = await this.getProducts();
+                results = this.filterByDescription(candidates, descriptionQuery.trim());
+                console.log(`📊 Filtrados ${results.length} productos por descripción`);
+                
+            } else {
+                // Sin criterios: obtener todos
+                console.log('📋 Sin criterios de búsqueda, obteniendo todos los productos');
+                results = await this.getProducts();
             }
             
             // Ordenar por relevancia y limitar
@@ -450,45 +482,92 @@ class StorageManager {
         try {
             console.time('⏱️ searchByCodeOptimized TOTAL');
             
+            // Normalizar código de búsqueda
+            const normalizedCode = this.normalizeText(codeQuery);
+            const normalizedSearchCode = codeQuery.toUpperCase();
+            
+            // PASO 1: Buscar MATCH EXACTO en código principal
+            console.log('🎯 Paso 1: Buscando match exacto en código principal...');
+            console.time('⏱️ Búsqueda EXACTA productos');
+            const productoPrincipal = await new Promise((resolve) => {
+                const tx = this.db.transaction(['productos'], 'readonly');
+                const store = tx.objectStore('productos');
+                const req = store.get(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+            console.timeEnd('⏱️ Búsqueda EXACTA productos');
+            
+            if (productoPrincipal) {
+                console.log('✅ MATCH EXACTO encontrado en código principal:', productoPrincipal.codigo);
+                console.timeEnd('⏱️ searchByCodeOptimized TOTAL');
+                return [productoPrincipal];
+            }
+            
+            // PASO 2: Buscar MATCH EXACTO en códigos secundarios
+            console.log('🎯 Paso 2: Buscando match exacto en códigos secundarios...');
+            console.time('⏱️ Búsqueda EXACTA secundarios');
+            const codigoSecundario = await new Promise((resolve) => {
+                const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
+                const store = tx.objectStore('codigos_secundarios');
+                const req = store.get(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+            console.timeEnd('⏱️ Búsqueda EXACTA secundarios');
+
+            if (codigoSecundario) {
+                const productoPrincipalDeSecundario = await new Promise((resolve) => {
+                    const tx = this.db.transaction(['productos'], 'readonly');
+                    const store = tx.objectStore('productos');
+                    const req = store.get(codigoSecundario.codigo_principal);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => resolve(null);
+                });
+
+                if (productoPrincipalDeSecundario) {
+                    console.log('✅ MATCH EXACTO encontrado en código secundario:', codigoSecundario.codigo_secundario);
+                    console.timeEnd('⏱️ searchByCodeOptimized TOTAL');
+                    return [productoPrincipalDeSecundario];
+                }
+            }
+            
+            // PASO 3: No hay match exacto - Buscar coincidencias parciales (substring)
+            console.log('⚠️ No hay match exacto, buscando coincidencias parciales (substring)...');
             const results = new Set();
             const processedCodes = new Set();
             
-            // Normalizar código de búsqueda
-            const normalizedCode = this.normalizeText(codeQuery);
-            
             // Buscar en códigos principales (SKU)
-            console.time('⏱️ Búsqueda en productos');
+            console.time('⏱️ Búsqueda PARCIAL productos');
             const productos = await this.searchInProductos(normalizedCode);
-            console.timeEnd('⏱️ Búsqueda en productos');
+            console.timeEnd('⏱️ Búsqueda PARCIAL productos');
             
             productos.forEach(producto => {
                 results.add(producto.codigo);
                 processedCodes.add(producto.codigo);
             });
             
-            const foundInProductos = results.size > 0;
+            console.log(`📊 Encontrados ${results.size} productos por código principal (substring)`);
             
-            // Buscar en códigos secundarios (EAN) solo si no hay muchos resultados
-            if (results.size < 10) {
-                console.time('⏱️ Búsqueda en secundarios');
-                // Si ya encontró en productos, solo búsqueda exacta (no parcial)
-                // Si NO encontró nada, permitir búsqueda parcial
-                const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode, foundInProductos);
-                console.timeEnd('⏱️ Búsqueda en secundarios');
-                
-                for (const codigoSec of codigosSecundarios) {
-                    if (!processedCodes.has(codigoSec.codigo_principal)) {
-                        results.add(codigoSec.codigo_principal);
-                        processedCodes.add(codigoSec.codigo_principal);
-                    }
+            // Buscar en códigos secundarios (EAN)
+            console.time('⏱️ Búsqueda PARCIAL secundarios');
+            const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode, false);
+            console.timeEnd('⏱️ Búsqueda PARCIAL secundarios');
+            
+            for (const codigoSec of codigosSecundarios) {
+                if (!processedCodes.has(codigoSec.codigo_principal)) {
+                    results.add(codigoSec.codigo_principal);
+                    processedCodes.add(codigoSec.codigo_principal);
                 }
             }
+            
+            console.log(`📊 Total después de códigos secundarios (substring): ${results.size} productos`);
             
             // Obtener productos completos
             const productosCompletos = await this.getProductsByCodes(Array.from(results));
             
             console.timeEnd('⏱️ searchByCodeOptimized TOTAL');
-            console.log(`✅ Encontrados ${productosCompletos.length} productos por código`);
+            console.log(`✅ Encontrados ${productosCompletos.length} productos por código (substring match)`);
             
             return productosCompletos;
             
@@ -639,8 +718,85 @@ class StorageManager {
     }
 
     /**
-     * Paso 2: Filtro por descripción en productos candidatos
+     * Filtra productos por código en memoria (mucho más rápido que buscar en BD)
+     * PRIORIZA MATCH EXACTO: Si hay match exacto, devuelve solo ese.
+     * Si no, busca substring match.
      */
+    filterByCodeInMemory(candidates, codeQuery) {
+        const normalizedQuery = this.normalizeText(codeQuery);
+        const upperQuery = codeQuery.toUpperCase();
+        
+        // PASO 1: Buscar match EXACTO
+        const exactMatch = candidates.find(producto => 
+            producto.codigo === upperQuery || 
+            (producto.codigo_secundario && producto.codigo_secundario === upperQuery)
+        );
+        
+        if (exactMatch) {
+            console.log('✅ MATCH EXACTO en memoria:', exactMatch.codigo);
+            return [{
+                ...exactMatch,
+                relevance: 100,
+                matchType: 'codigo_exacto'
+            }];
+        }
+        
+        // PASO 2: No hay match exacto - Buscar substring
+        console.log('🔍 Buscando substring match en memoria...');
+        const results = [];
+        
+        for (const producto of candidates) {
+            const codigoNormalizado = this.normalizeText(producto.codigo);
+            const codigoSecNormalizado = producto.codigo_secundario ? 
+                this.normalizeText(producto.codigo_secundario) : '';
+            
+            // Verificar si el código contiene la búsqueda
+            if (codigoNormalizado.includes(normalizedQuery) || 
+                codigoSecNormalizado.includes(normalizedQuery)) {
+                results.push({
+                    ...producto,
+                    relevance: this.calculateCodeRelevance(producto, normalizedQuery),
+                    matchType: 'codigo_parcial'
+                });
+            }
+        }
+        
+        return results;
+    }
+    
+    /**
+     * Calcula relevancia basada en código
+     */
+    calculateCodeRelevance(producto, normalizedQuery) {
+        const codigoNormalizado = this.normalizeText(producto.codigo);
+        let score = 0;
+        
+        // Match exacto
+        if (codigoNormalizado === normalizedQuery) {
+            score += 100;
+        }
+        // Comienza con el query
+        else if (codigoNormalizado.startsWith(normalizedQuery)) {
+            score += 50;
+        }
+        // Contiene el query
+        else if (codigoNormalizado.includes(normalizedQuery)) {
+            score += 25;
+        }
+        
+        // Bonus por código secundario
+        if (producto.codigo_secundario) {
+            const codigoSecNormalizado = this.normalizeText(producto.codigo_secundario);
+            if (codigoSecNormalizado === normalizedQuery) {
+                score += 80;
+            } else if (codigoSecNormalizado.includes(normalizedQuery)) {
+                score += 20;
+            }
+        }
+        
+        return score;
+    }
+
     filterByDescription(candidates, descriptionQuery) {
         const queryWords = this.parseQuery(descriptionQuery);
         const results = [];
