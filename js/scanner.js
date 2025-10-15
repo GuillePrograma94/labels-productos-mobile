@@ -323,13 +323,20 @@ class BarcodeScanner {
             // Llenar datos del producto
             nameElement.textContent = product.descripcion || 'Producto sin nombre';
             codeElement.textContent = product.codigo || 'Sin código';
-            priceElement.textContent = product.precio ? `€${product.precio}` : 'Sin precio';
+            
+            // Calcular precio con IVA (21%) como en el resto de la app
+            if (product.pvp && product.pvp > 0) {
+                const precioConIva = product.pvp * 1.21;
+                priceElement.textContent = `${precioConIva.toFixed(2)}€`;
+            } else {
+                priceElement.textContent = 'Sin precio';
+            }
             
             // Mostrar tarjeta con animación
             card.style.display = 'block';
             card.style.animation = 'productDetectedSlideIn 0.3s ease-out';
             
-            console.log('📦 Mostrando tarjeta de producto detectado:', product.descripcion);
+            console.log('📦 Mostrando tarjeta de producto detectado:', product.descripcion, 'Precio:', product.pvp);
         }
     }
 
