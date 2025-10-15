@@ -237,6 +237,13 @@ class StorageManager {
      */
     async saveProducts(productos) {
         try {
+            console.log(`📝 Iniciando guardado de ${productos.length} productos...`);
+            
+            // Validar que los productos no sean null/undefined
+            if (!productos || !Array.isArray(productos)) {
+                throw new Error('Los productos no son válidos');
+            }
+            
             const transaction = this.db.transaction(['productos'], 'readwrite');
             const store = transaction.objectStore('productos');
 
@@ -244,16 +251,58 @@ class StorageManager {
             await store.clear();
 
             // Insertar nuevos productos con códigos normalizados
-            for (const producto of productos) {
-                const normalizedProduct = {
-                    ...producto,
-                    codigo: producto.codigo.toUpperCase()
-                };
-                await store.add(normalizedProduct);
+            let savedCount = 0;
+            let errorCount = 0;
+            
+            for (let i = 0; i < productos.length; i++) {
+                const producto = productos[i];
+                
+                // Validar que el producto tenga los campos necesarios
+                if (!producto || 
+                    !producto.codigo || 
+                    !producto.descripcion ||
+                    typeof producto.codigo !== 'string' ||
+                    typeof producto.descripcion !== 'string') {
+                    console.warn(`⚠️ Producto inválido en posición ${i}:`, producto);
+                    errorCount++;
+                    continue;
+                }
+                
+                try {
+                    const normalizedProduct = {
+                        ...producto,
+                        codigo: producto.codigo.toUpperCase().trim()
+                    };
+                    
+                    // Validar que el código normalizado no esté vacío
+                    if (!normalizedProduct.codigo) {
+                        console.warn(`⚠️ Producto con código vacío después de normalización en posición ${i}:`, normalizedProduct);
+                        errorCount++;
+                        continue;
+                    }
+                    
+                    await store.add(normalizedProduct);
+                    savedCount++;
+                    
+                    // Log de progreso cada 10000 productos
+                    if (savedCount % 10000 === 0) {
+                        console.log(`📊 Progreso: ${savedCount}/${productos.length} productos guardados`);
+                    }
+                    
+                } catch (addError) {
+                    console.error(`❌ Error al guardar producto ${i}:`, addError, producto);
+                    errorCount++;
+                }
             }
 
             await this.waitForTransaction(transaction);
-            console.log(`✅ Guardados ${productos.length} productos (códigos normalizados a MAYÚSCULAS)`);
+            
+            console.log(`✅ Guardados ${savedCount} productos (${errorCount} errores)`);
+            
+            if (errorCount > 0) {
+                console.warn(`⚠️ Se encontraron ${errorCount} productos con problemas`);
+            }
+            
         } catch (error) {
             console.error('❌ Error al guardar productos:', error);
             throw error;
@@ -266,6 +315,13 @@ class StorageManager {
      */
     async saveSecondaryCodes(codigos) {
         try {
+            console.log(`📝 Iniciando guardado de ${codigos.length} códigos secundarios...`);
+            
+            // Validar que los códigos no sean null/undefined
+            if (!codigos || !Array.isArray(codigos)) {
+                throw new Error('Los códigos secundarios no son válidos');
+            }
+            
             const transaction = this.db.transaction(['codigos_secundarios'], 'readwrite');
             const store = transaction.objectStore('codigos_secundarios');
 
@@ -273,17 +329,59 @@ class StorageManager {
             await store.clear();
 
             // Insertar nuevos códigos con códigos normalizados
-            for (const codigo of codigos) {
-                const normalizedCodigo = {
-                    ...codigo,
-                    codigo_secundario: codigo.codigo_secundario.toUpperCase(),
-                    codigo_principal: codigo.codigo_principal.toUpperCase()
-                };
-                await store.add(normalizedCodigo);
+            let savedCount = 0;
+            let errorCount = 0;
+            
+            for (let i = 0; i < codigos.length; i++) {
+                const codigo = codigos[i];
+                
+                // Validar que el código tenga los campos necesarios
+                if (!codigo || 
+                    !codigo.codigo_secundario || 
+                    !codigo.codigo_principal ||
+                    typeof codigo.codigo_secundario !== 'string' ||
+                    typeof codigo.codigo_principal !== 'string') {
+                    console.warn(`⚠️ Código secundario inválido en posición ${i}:`, codigo);
+                    errorCount++;
+                    continue;
+                }
+                
+                try {
+                    const normalizedCodigo = {
+                        ...codigo,
+                        codigo_secundario: codigo.codigo_secundario.toUpperCase().trim(),
+                        codigo_principal: codigo.codigo_principal.toUpperCase().trim()
+                    };
+                    
+                    // Validar que los códigos normalizados no estén vacíos
+                    if (!normalizedCodigo.codigo_secundario || !normalizedCodigo.codigo_principal) {
+                        console.warn(`⚠️ Código secundario vacío después de normalización en posición ${i}:`, normalizedCodigo);
+                        errorCount++;
+                        continue;
+                    }
+                    
+                    await store.add(normalizedCodigo);
+                    savedCount++;
+                    
+                    // Log de progreso cada 10000 códigos
+                    if (savedCount % 10000 === 0) {
+                        console.log(`📊 Progreso: ${savedCount}/${codigos.length} códigos guardados`);
+                    }
+                    
+                } catch (addError) {
+                    console.error(`❌ Error al guardar código secundario ${i}:`, addError, codigo);
+                    errorCount++;
+                }
             }
 
             await this.waitForTransaction(transaction);
-            console.log(`✅ Guardados ${codigos.length} códigos secundarios (normalizados a MAYÚSCULAS)`);
+            
+            console.log(`✅ Guardados ${savedCount} códigos secundarios (${errorCount} errores)`);
+            
+            if (errorCount > 0) {
+                console.warn(`⚠️ Se encontraron ${errorCount} códigos secundarios con problemas`);
+            }
+            
         } catch (error) {
             console.error('❌ Error al guardar códigos secundarios:', error);
             throw error;

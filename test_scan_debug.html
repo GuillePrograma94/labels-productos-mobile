@@ -83,6 +83,13 @@
         </div>
 
         <div class="test-section">
+            <h3>🔄 Forzar Sincronización</h3>
+            <button onclick="forceSync()">Sincronizar Ahora</button>
+            <button onclick="clearLocalData()">Limpiar Datos Locales</button>
+            <div id="syncResult"></div>
+        </div>
+
+        <div class="test-section">
             <h3>📝 Log de Debug</h3>
             <button onclick="clearLog()">Limpiar Log</button>
             <div id="debugLog" class="log"></div>
@@ -286,6 +293,51 @@
 
         function clearLog() {
             document.getElementById('debugLog').innerHTML = '';
+        }
+
+        async function forceSync() {
+            const resultDiv = document.getElementById('syncResult');
+            resultDiv.innerHTML = '<p>🔄 Iniciando sincronización...</p>';
+            
+            try {
+                // Simular sincronización forzada
+                if (window.mobileApp && window.mobileApp.forceSyncronization) {
+                    await window.mobileApp.forceSyncronization();
+                    resultDiv.innerHTML = '<div class="success"><h4>✅ Sincronización Completada</h4></div>';
+                } else {
+                    resultDiv.innerHTML = '<div class="error"><h4>❌ Función de sincronización no disponible</h4></div>';
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="error">
+                        <h4>❌ Error en Sincronización</h4>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+                console.error('Error en sincronización:', error);
+            }
+        }
+
+        async function clearLocalData() {
+            const resultDiv = document.getElementById('syncResult');
+            
+            if (confirm('¿Estás seguro de que quieres limpiar todos los datos locales? Esto eliminará todos los productos y códigos secundarios.')) {
+                resultDiv.innerHTML = '<p>🧹 Limpiando datos locales...</p>';
+                
+                try {
+                    await window.storageManager.clearAllData();
+                    resultDiv.innerHTML = '<div class="success"><h4>✅ Datos Locales Limpiados</h4><p>Recarga la página para ver los cambios.</p></div>';
+                    console.log('✅ Datos locales limpiados');
+                } catch (error) {
+                    resultDiv.innerHTML = `
+                        <div class="error">
+                            <h4>❌ Error al Limpiar Datos</h4>
+                            <p>${error.message}</p>
+                        </div>
+                    `;
+                    console.error('Error al limpiar datos:', error);
+                }
+            }
         }
 
         // Inicializar al cargar la página
