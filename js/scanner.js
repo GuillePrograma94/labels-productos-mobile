@@ -318,6 +318,8 @@ class BarcodeScanner {
         const nameElement = document.getElementById('detectedProductName');
         const codeElement = document.getElementById('detectedProductCode');
         const priceElement = document.getElementById('detectedProductPrice');
+        const imageContainer = card?.querySelector('.product-image-container');
+        const placeholder = card?.querySelector('.product-image-placeholder');
         
         if (card && nameElement && codeElement && priceElement) {
             // Llenar datos del producto
@@ -330,6 +332,35 @@ class BarcodeScanner {
                 priceElement.textContent = `${precioConIva.toFixed(2)}€`;
             } else {
                 priceElement.textContent = 'Sin precio';
+            }
+            
+            // Cargar imagen del producto
+            if (imageContainer && placeholder) {
+                // Limpiar imagen anterior si existe
+                const existingImg = imageContainer.querySelector('.product-image');
+                if (existingImg) {
+                    existingImg.remove();
+                }
+                
+                // Crear nueva imagen
+                const img = document.createElement('img');
+                img.src = `https://www.saneamiento-martinez.com/imagenes/articulos/${product.codigo}_1.JPG`;
+                img.alt = `Imagen de ${product.descripcion}`;
+                img.className = 'product-image';
+                img.style.display = 'none';
+                
+                img.onload = () => {
+                    img.style.display = 'block';
+                    placeholder.style.display = 'none';
+                    console.log('✅ Imagen cargada para producto:', product.codigo);
+                };
+                
+                img.onerror = () => {
+                    console.log('❌ Error cargando imagen para producto:', product.codigo);
+                    placeholder.style.display = 'flex';
+                };
+                
+                imageContainer.appendChild(img);
             }
             
             // Mostrar tarjeta con animación

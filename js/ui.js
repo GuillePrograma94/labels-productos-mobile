@@ -10,6 +10,9 @@ class UIManager {
         this.searchResults = [];
         this.isLoading = false;
         
+        // Cargar lista guardada al inicializar
+        this.loadSavedList();
+        
         // Referencias a elementos DOM
         this.elements = {};
         
@@ -517,6 +520,51 @@ class UIManager {
     }
 
     /**
+     * Guarda la lista actual en localStorage
+     */
+    saveList() {
+        try {
+            localStorage.setItem('mobile_web_app_list', JSON.stringify(this.currentList));
+            console.log('💾 Lista guardada en localStorage');
+        } catch (error) {
+            console.error('❌ Error guardando lista:', error);
+        }
+    }
+
+    /**
+     * Carga la lista guardada desde localStorage
+     */
+    loadSavedList() {
+        try {
+            const savedList = localStorage.getItem('mobile_web_app_list');
+            if (savedList) {
+                this.currentList = JSON.parse(savedList);
+                console.log('📂 Lista cargada desde localStorage:', this.currentList.length, 'productos');
+                
+                // Actualizar UI si hay productos
+                if (this.currentList.length > 0) {
+                    this.updateUI();
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error cargando lista guardada:', error);
+            this.currentList = [];
+        }
+    }
+
+    /**
+     * Limpia la lista guardada
+     */
+    clearSavedList() {
+        try {
+            localStorage.removeItem('mobile_web_app_list');
+            console.log('🗑️ Lista guardada eliminada');
+        } catch (error) {
+            console.error('❌ Error eliminando lista guardada:', error);
+        }
+    }
+
+    /**
      * Añade un producto a la lista actual
      */
     async addProductToList(codigo) {
@@ -552,6 +600,9 @@ class UIManager {
                 });
                 this.showToast('Producto añadido a la lista', 'success');
             }
+            
+            // Guardar lista automáticamente
+            this.saveList();
 
             this.updateCurrentListDisplay();
             this.updateUI();
@@ -644,6 +695,8 @@ class UIManager {
         } else {
             this.updateCurrentListDisplay();
             this.updateUI();
+            // Guardar lista automáticamente
+            this.saveList();
         }
     }
 
@@ -659,6 +712,9 @@ class UIManager {
         this.showToast(`${product.descripcion} eliminado`, 'success');
         this.updateCurrentListDisplay();
         this.updateUI();
+        
+        // Guardar lista automáticamente
+        this.saveList();
     }
 
     /**
@@ -681,6 +737,9 @@ class UIManager {
             this.updateCurrentListDisplay();
             this.updateUI();
             this.showToast('Lista limpiada', 'success');
+            
+            // Limpiar lista guardada también
+            this.clearSavedList();
         }
     }
 
