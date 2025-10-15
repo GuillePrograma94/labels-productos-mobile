@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Escaneo - Labels Productos</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        .info { background-color: #d1ecf1; border-color: #bee5eb; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 5px;
+            width: 200px;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Debug Escaneo - Labels Productos</h1>
+        
+        <div class="test-section info">
+            <h3>📊 Estado de la Base de Datos</h3>
+            <button onclick="checkDatabaseStatus()">Verificar Estado</button>
+            <div id="dbStatus"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🧪 Prueba de Escaneo</h3>
+            <input type="text" id="testCode" placeholder="Código a probar (ej: 8433290749762)" value="8433290749762">
+            <button onclick="testScan()">Probar Escaneo</button>
+            <div id="scanResult"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🔍 Búsqueda Manual</h3>
+            <input type="text" id="manualCode" placeholder="Código a buscar">
+            <button onclick="searchInProducts()">Buscar en Productos</button>
+            <button onclick="searchInSecondary()">Buscar en Códigos Secundarios</button>
+            <div id="manualResult"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>📝 Log de Debug</h3>
+            <button onclick="clearLog()">Limpiar Log</button>
+            <div id="debugLog" class="log"></div>
+        </div>
+    </div>
+
+    <!-- Incluir los scripts necesarios -->
+    <script src="js/storage.js"></script>
+    <script>
+        // Interceptar console.log para mostrar en la interfaz
+        const originalLog = console.log;
+        const originalError = console.error;
+        
+        function logToUI(message, type = 'info') {
+            const logDiv = document.getElementById('debugLog');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> ${message}`;
+            logEntry.style.color = type === 'error' ? '#dc3545' : '#333';
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            logToUI(args.join(' '));
+        };
+
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            logToUI(args.join(' '), 'error');
+        };
+
+        async function checkDatabaseStatus() {
+            const statusDiv = document.getElementById('dbStatus');
+            statusDiv.innerHTML = '<p>Verificando base de datos...</p>';
+            
+            try {
+                // Inicializar storage manager
+                await window.storageManager.initialize();
+                
+                // Obtener estadísticas
+                const stats = await window.storageManager.getStorageStats();
+                
+                // Verificar productos
+                const productos = await window.storageManager.getProducts();
+                const codigos = await window.storageManager.getSecondaryCodes();
+                
+                statusDiv.innerHTML = `
+                    <div class="success">
+                        <h4>✅ Base de Datos Cargada</h4>
+                        <p><strong>Productos:</strong> ${productos.length.toLocaleString()}</p>
+                        <p><strong>Códigos Secundarios:</strong> ${codigos.length.toLocaleString()}</p>
+                        <p><strong>Última Sincronización:</strong> ${stats.ultima_sincronizacion || 'Nunca'}</p>
+                    </div>
+                `;
+                
+                // Mostrar algunos ejemplos
+                if (productos.length > 0) {
+                    const ejemploProducto = productos[0];
+                    console.log('📦 Ejemplo de producto:', ejemploProducto);
+                }
+                
+                if (codigos.length > 0) {
+                    const ejemploCodigo = codigos[0];
+                    console.log('🏷️ Ejemplo de código secundario:', ejemploCodigo);
+                }
+                
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="error">
+                        <h4>❌ Error en Base de Datos</h4>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+                console.error('Error verificando base de datos:', error);
+            }
+        }
+
+        async function testScan() {
+            const code = document.getElementById('testCode').value.trim();
+            const resultDiv = document.getElementById('scanResult');
+            
+            if (!code) {
+                resultDiv.innerHTML = '<div class="error"><p>❌ Ingresa un código para probar</p></div>';
+                return;
+            }
+            
+            resultDiv.innerHTML = '<p>🔍 Probando escaneo...</p>';
+            
+            try {
+                console.log(`🧪 PROBANDO ESCANEO: ${code}`);
+                const results = await window.storageManager.searchProductsForScan(code);
+                
+                if (results.length > 0) {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            <h4>✅ Producto Encontrado</h4>
+                            <p><strong>Código:</strong> ${results[0].codigo}</p>
+                            <p><strong>Descripción:</strong> ${results[0].descripcion}</p>
+                            <p><strong>PVP:</strong> €${results[0].pvp}</p>
+                            <p><strong>Resultados:</strong> ${results.length}</p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="error">
+                            <h4>❌ No se encontró el producto</h4>
+                            <p>Código escaneado: <strong>${code}</strong></p>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="error">
+                        <h4>❌ Error en escaneo</h4>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+                console.error('Error en escaneo:', error);
+            }
+        }
+
+        async function searchInProducts() {
+            const code = document.getElementById('manualCode').value.trim().toUpperCase();
+            const resultDiv = document.getElementById('manualResult');
+            
+            if (!code) {
+                resultDiv.innerHTML = '<div class="error"><p>❌ Ingresa un código para buscar</p></div>';
+                return;
+            }
+            
+            try {
+                const productos = await window.storageManager.getProducts();
+                const found = productos.find(p => p.codigo === code);
+                
+                if (found) {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            <h4>✅ Encontrado en Productos</h4>
+                            <p><strong>Código:</strong> ${found.codigo}</p>
+                            <p><strong>Descripción:</strong> ${found.descripcion}</p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="error">
+                            <h4>❌ No encontrado en Productos</h4>
+                            <p>Código buscado: <strong>${code}</strong></p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error"><p>Error: ${error.message}</p></div>`;
+            }
+        }
+
+        async function searchInSecondary() {
+            const code = document.getElementById('manualCode').value.trim().toUpperCase();
+            const resultDiv = document.getElementById('manualResult');
+            
+            if (!code) {
+                resultDiv.innerHTML = '<div class="error"><p>❌ Ingresa un código para buscar</p></div>';
+                return;
+            }
+            
+            try {
+                const codigos = await window.storageManager.getSecondaryCodes();
+                const found = codigos.find(c => c.codigo_secundario === code);
+                
+                if (found) {
+                    // Buscar el producto principal
+                    const productos = await window.storageManager.getProducts();
+                    const productoPrincipal = productos.find(p => p.codigo === found.codigo_principal);
+                    
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            <h4>✅ Encontrado en Códigos Secundarios</h4>
+                            <p><strong>Código Secundario:</strong> ${found.codigo_secundario}</p>
+                            <p><strong>Código Principal:</strong> ${found.codigo_principal}</p>
+                            <p><strong>Descripción Secundario:</strong> ${found.descripcion}</p>
+                            ${productoPrincipal ? `
+                                <p><strong>Producto Principal:</strong> ${productoPrincipal.descripcion}</p>
+                                <p><strong>PVP:</strong> €${productoPrincipal.pvp}</p>
+                            ` : '<p><strong>⚠️ Producto principal no encontrado</strong></p>'}
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="error">
+                            <h4>❌ No encontrado en Códigos Secundarios</h4>
+                            <p>Código buscado: <strong>${code}</strong></p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error"><p>Error: ${error.message}</p></div>`;
+            }
+        }
+
+        function clearLog() {
+            document.getElementById('debugLog').innerHTML = '';
+        }
+
+        // Inicializar al cargar la página
+        window.addEventListener('load', () => {
+            console.log('🚀 Página de debug cargada');
+        });
+    </script>
+</body>
+</html>

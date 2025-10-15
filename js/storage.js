@@ -30,6 +30,11 @@ class StorageManager {
             const originalCode = scannedCode.trim();
             const normalizedSearchCode = originalCode.toUpperCase();
 
+            console.log('🔍 ESCANEO INICIADO:', {
+                codigoOriginal: originalCode,
+                codigoNormalizado: normalizedSearchCode,
+                longitud: normalizedSearchCode.length
+            });
             console.time('⏱️ searchProductsForScan TOTAL');
             
             const results = [];
@@ -61,7 +66,8 @@ class StorageManager {
                 req.onerror = () => resolve(null);
             });
 
-            if (codigoSecundario && !seen.has(codigoSecundario.codigo_principal)) {
+            if (codigoSecundario) {
+                console.log('✅ Código secundario encontrado:', codigoSecundario.codigo_secundario, '→', codigoSecundario.codigo_principal);
                 const principal = await new Promise((resolve) => {
                     const tx = this.db.transaction(['productos'], 'readonly');
                     const store = tx.objectStore('productos');
@@ -69,10 +75,17 @@ class StorageManager {
                     req.onsuccess = () => resolve(req.result || null);
                     req.onerror = () => resolve(null);
                 });
-                if (principal) {
+                if (principal && !seen.has(principal.codigo)) {
+                    console.log('✅ Producto principal obtenido:', principal.codigo, principal.descripcion);
                     results.push(principal);
                     seen.add(principal.codigo);
+                } else if (principal) {
+                    console.log('⚠️ Producto ya incluido en resultados');
+                } else {
+                    console.log('❌ No se encontró el producto principal para el código secundario');
                 }
+            } else {
+                console.log('❌ No se encontró código secundario para:', normalizedSearchCode);
             }
             console.timeEnd('⏱️ Búsqueda exacta secundarios');
 
