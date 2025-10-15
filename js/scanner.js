@@ -269,9 +269,6 @@ class BarcodeScanner {
     async searchDetectedCode() {
         const code = this.elements.detectedCode.textContent;
         if (code) {
-            // Cerrar escáner
-            this.closeScanner();
-            
             // Buscar productos con este código específico
             try {
                 const results = await window.storageManager.searchProductsForScan(code);
@@ -280,26 +277,97 @@ class BarcodeScanner {
                     // Si hay exactamente un producto, añadirlo automáticamente
                     const product = results[0];
                     await window.ui.addProductToList(product.codigo);
-                    window.ui.showToast(`✅ ${product.descripcion} añadido automáticamente`, 'success');
+                    
+                    // Mostrar tarjeta de producto detectado
+                    this.showProductDetectedCard(product);
+                    
+                    // Después de 2 segundos, reiniciar escáner
+                    setTimeout(() => {
+                        this.hideProductDetectedCard();
+                        this.restartScanner();
+                    }, 2000); // 2 segundos de delay
                 } else if (results.length > 1) {
-                    // Si hay múltiples productos, mostrar resultados para que el usuario elija
+                    // Si hay múltiples productos, cerrar escáner y mostrar resultados
+                    this.closeScanner();
                     window.ui.elements.codeInput.value = code;
                     window.ui.performSmartSearch();
                     window.ui.showToast(`🔍 ${results.length} productos encontrados. Selecciona el correcto.`, 'info');
                 } else {
-                    // Si no se encuentra el producto
+                    // Si no se encuentra el producto, cerrar escáner y mostrar búsqueda
+                    this.closeScanner();
                     window.ui.elements.codeInput.value = code;
                     window.ui.showToast(`❌ No se encontró producto con código ${code}`, 'warning');
                 }
             } catch (error) {
                 console.error('Error al buscar código detectado:', error);
-                // Fallback: usar búsqueda normal
+                // Fallback: cerrar escáner y usar búsqueda normal
+                this.closeScanner();
                 if (window.ui) {
                     window.ui.elements.codeInput.value = code;
                     window.ui.performSmartSearch();
                 }
             }
         }
+    }
+
+    /**
+     * Muestra la tarjeta de producto detectado
+     */
+    showProductDetectedCard(product) {
+        const card = document.getElementById('productDetectedCard');
+        const nameElement = document.getElementById('detectedProductName');
+        const codeElement = document.getElementById('detectedProductCode');
+        const priceElement = document.getElementById('detectedProductPrice');
+        
+        if (card && nameElement && codeElement && priceElement) {
+            // Llenar datos del producto
+            nameElement.textContent = product.descripcion || 'Producto sin nombre';
+            codeElement.textContent = product.codigo || 'Sin código';
+            priceElement.textContent = product.precio ? `€${product.precio}` : 'Sin precio';
+            
+            // Mostrar tarjeta con animación
+            card.style.display = 'block';
+            card.style.animation = 'productDetectedSlideIn 0.3s ease-out';
+            
+            console.log('📦 Mostrando tarjeta de producto detectado:', product.descripcion);
+        }
+    }
+
+    /**
+     * Oculta la tarjeta de producto detectado
+     */
+    hideProductDetectedCard() {
+        const card = document.getElementById('productDetectedCard');
+        if (card) {
+            card.style.animation = 'productDetectedSlideOut 0.2s ease-in';
+            setTimeout(() => {
+                card.style.display = 'none';
+            }, 200);
+            console.log('📦 Ocultando tarjeta de producto detectado');
+        }
+    }
+
+    /**
+     * Reinicia el escáner para continuar escaneando
+     */
+    restartScanner() {
+        // Ocultar resultado anterior
+        if (this.elements.scannerResult) {
+            this.elements.scannerResult.style.display = 'none';
+        }
+        
+        // Limpiar código detectado
+        if (this.elements.detectedCode) {
+            this.elements.detectedCode.textContent = '';
+        }
+        
+        // Mostrar mensaje de que está listo para el siguiente escaneo
+        window.ui.showToast('📷 Listo para escanear siguiente código', 'info', 2000);
+        
+        // Reiniciar escaneo
+        this.startScanning();
+        
+        console.log('🔄 Escáner reiniciado para continuar escaneando');
     }
 
     /**
