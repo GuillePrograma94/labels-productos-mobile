@@ -56,33 +56,41 @@ class StorageManager {
                 seen.add(productoPrincipal.codigo);
             }
 
-            // 2) Búsqueda EXACTA en códigos secundarios - INSTANTÁNEA con store.get()
+            // 2) Búsqueda EXACTA en códigos secundarios - Usar índice para permitir duplicados
             console.time('⏱️ Búsqueda exacta secundarios');
-            const codigoSecundario = await new Promise((resolve) => {
+            const codigosSecundarios = await new Promise((resolve) => {
                 const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
                 const store = tx.objectStore('codigos_secundarios');
-                const req = store.get(normalizedSearchCode);
-                req.onsuccess = () => resolve(req.result || null);
-                req.onerror = () => resolve(null);
+                const index = store.index('codigo_secundario');
+                const req = index.getAll(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => resolve([]);
             });
 
-            if (codigoSecundario) {
-                console.log('✅ Código secundario encontrado:', codigoSecundario.codigo_secundario, '→', codigoSecundario.codigo_principal);
-                const principal = await new Promise((resolve) => {
-                    const tx = this.db.transaction(['productos'], 'readonly');
-                    const store = tx.objectStore('productos');
-                    const req = store.get(codigoSecundario.codigo_principal);
-                    req.onsuccess = () => resolve(req.result || null);
-                    req.onerror = () => resolve(null);
-                });
-                if (principal && !seen.has(principal.codigo)) {
-                    console.log('✅ Producto principal obtenido:', principal.codigo, principal.descripcion);
-                    results.push(principal);
-                    seen.add(principal.codigo);
-                } else if (principal) {
-                    console.log('⚠️ Producto ya incluido en resultados');
-                } else {
-                    console.log('❌ No se encontró el producto principal para el código secundario');
+            if (codigosSecundarios.length > 0) {
+                console.log(`✅ Encontrados ${codigosSecundarios.length} código(s) secundario(s):`, codigosSecundarios.map(cs => cs.codigo_secundario));
+                
+                // Procesar todos los códigos secundarios encontrados
+                for (const codigoSecundario of codigosSecundarios) {
+                    if (!seen.has(codigoSecundario.codigo_principal)) {
+                        const principal = await new Promise((resolve) => {
+                            const tx = this.db.transaction(['productos'], 'readonly');
+                            const store = tx.objectStore('productos');
+                            const req = store.get(codigoSecundario.codigo_principal);
+                            req.onsuccess = () => resolve(req.result || null);
+                            req.onerror = () => resolve(null);
+                        });
+                        
+                        if (principal) {
+                            console.log('✅ Producto principal obtenido:', principal.codigo, principal.descripcion);
+                            results.push(principal);
+                            seen.add(principal.codigo);
+                        } else {
+                            console.log('❌ No se encontró el producto principal para:', codigoSecundario.codigo_principal);
+                        }
+                    } else {
+                        console.log('⚠️ Producto ya incluido en resultados:', codigoSecundario.codigo_principal);
+                    }
                 }
             } else {
                 console.log('❌ No se encontró código secundario para:', normalizedSearchCode);
@@ -131,12 +139,13 @@ class StorageManager {
                 }
             });
 
-            // Buscar prefijos en secundarios
+            // Buscar prefijos en secundarios usando índice
             const secundariosCursor = await new Promise((resolve) => {
                 const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
                 const store = tx.objectStore('codigos_secundarios');
+                const index = store.index('codigo_secundario');
                 const matches = [];
-                const cursorReq = store.openCursor();
+                const cursorReq = index.openCursor();
                 
                 cursorReq.onsuccess = (event) => {
                     const cursor = event.target.result;
@@ -209,7 +218,8 @@ class StorageManager {
 
                 // Crear almacén de códigos secundarios
                 if (!db.objectStoreNames.contains('codigos_secundarios')) {
-                    const codigosStore = db.createObjectStore('codigos_secundarios', { keyPath: 'codigo_secundario' });
+                    const codigosStore = db.createObjectStore('codigos_secundarios', { keyPath: 'id', autoIncrement: true });
+                    codigosStore.createIndex('codigo_secundario', 'codigo_secundario', { unique: false }); // NO único - permite duplicados
                     codigosStore.createIndex('codigo_principal', 'codigo_principal', { unique: false });
                     codigosStore.createIndex('descripcion', 'descripcion', { unique: false });
                 }
@@ -322,18 +332,147 @@ class StorageManager {
                 throw new Error('Los códigos secundarios no son válidos');
             }
             
-            const transaction = this.db.transaction(['codigos_secundarios'], 'readwrite');
-            const store = transaction.objectStore('codigos_secundarios');
-
-            // Limpiar códigos existentes
-            await store.clear();
-
-            // Insertar nuevos códigos con códigos normalizados
+            // Verificar que la base de datos esté disponible
+            if (!this.db) {
+                throw new Error('Base de datos no inicializada');
+            }
+            
+            console.log('🔍 Verificando estructura de base de datos...');
+            console.log('📊 Object stores disponibles:', Array.from(this.db.objectStoreNames));
+            
+            // Verificar que el object store existe
+            if (!this.db.objectStoreNames.contains('codigos_secundarios')) {
+                throw new Error('Object store codigos_secundarios no existe');
+            }
+            
+            // Detectar duplicados antes de guardar
+            console.log('🔍 Analizando códigos secundarios para duplicados...');
+            const duplicates = this.findDuplicateSecondaryCodes(codigos);
+            if (duplicates.length > 0) {
+                console.warn(`⚠️ Se encontraron ${duplicates.length} códigos secundarios duplicados:`, duplicates.slice(0, 10));
+                console.log('ℹ️ Los duplicados serán sobrescritos (se mantendrá el último valor)');
+            }
+            
+            // Estrategia de guardado por lotes para evitar problemas de memoria
+            const BATCH_SIZE = 1000;
             let savedCount = 0;
             let errorCount = 0;
             
+            // Limpiar códigos existentes en una transacción separada
+            console.log('🧹 Limpiando códigos secundarios existentes...');
+            await this.clearSecondaryCodes();
+            
+            // Procesar en lotes
+            for (let batchStart = 0; batchStart < codigos.length; batchStart += BATCH_SIZE) {
+                const batchEnd = Math.min(batchStart + BATCH_SIZE, codigos.length);
+                const batch = codigos.slice(batchStart, batchEnd);
+                
+                console.log(`📦 Procesando lote ${Math.floor(batchStart / BATCH_SIZE) + 1}: registros ${batchStart + 1}-${batchEnd}`);
+                
+                try {
+                    const batchResult = await this.saveSecondaryCodesBatch(batch, batchStart);
+                    savedCount += batchResult.saved;
+                    errorCount += batchResult.errors;
+                    
+                    console.log(`✅ Lote completado: ${batchResult.saved} guardados, ${batchResult.errors} errores`);
+                    
+                } catch (batchError) {
+                    console.error(`❌ Error en lote ${Math.floor(batchStart / BATCH_SIZE) + 1}:`, batchError);
+                    errorCount += batch.length; // Contar todo el lote como error
+                }
+            }
+            
+            console.log(`✅ Guardado completado: ${savedCount} códigos secundarios guardados (${errorCount} errores)`);
+            
+            if (errorCount > 0) {
+                console.warn(`⚠️ Se encontraron ${errorCount} códigos secundarios con problemas`);
+            }
+            
+            return { saved: savedCount, errors: errorCount };
+            
+        } catch (error) {
+            console.error('❌ Error al guardar códigos secundarios:', error);
+            console.error('🔍 Detalles del error:', {
+                message: error.message,
+                stack: error.stack,
+                name: error.name
+            });
+            throw error;
+        }
+    }
+    
+    /**
+     * Encuentra códigos secundarios duplicados
+     */
+    findDuplicateSecondaryCodes(codigos) {
+        const seen = new Set();
+        const duplicates = [];
+        
+        for (let i = 0; i < codigos.length; i++) {
+            const codigo = codigos[i];
+            if (!codigo || !codigo.codigo_secundario) continue;
+            
+            const normalizedCode = codigo.codigo_secundario.toUpperCase().trim();
+            if (seen.has(normalizedCode)) {
+                duplicates.push({
+                    index: i,
+                    codigo_secundario: normalizedCode,
+                    codigo_principal: codigo.codigo_principal
+                });
+            } else {
+                seen.add(normalizedCode);
+            }
+        }
+        
+        return duplicates;
+    }
+    
+    /**
+     * Limpia todos los códigos secundarios
+     */
+    async clearSecondaryCodes() {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['codigos_secundarios'], 'readwrite');
+            const store = transaction.objectStore('codigos_secundarios');
+            
+            transaction.oncomplete = () => {
+                console.log('✅ Códigos secundarios existentes eliminados');
+                resolve();
+            };
+            
+            transaction.onerror = () => {
+                console.error('❌ Error al limpiar códigos secundarios:', transaction.error);
+                reject(transaction.error);
+            };
+            
+            store.clear();
+        });
+    }
+    
+    /**
+     * Guarda un lote de códigos secundarios
+     */
+    async saveSecondaryCodesBatch(codigos, startIndex) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['codigos_secundarios'], 'readwrite');
+            const store = transaction.objectStore('codigos_secundarios');
+            
+            let savedCount = 0;
+            let errorCount = 0;
+            let completed = 0;
+            
+            transaction.oncomplete = () => {
+                resolve({ saved: savedCount, errors: errorCount });
+            };
+            
+            transaction.onerror = () => {
+                console.error('❌ Error en transacción de lote:', transaction.error);
+                reject(transaction.error);
+            };
+            
             for (let i = 0; i < codigos.length; i++) {
                 const codigo = codigos[i];
+                const globalIndex = startIndex + i;
                 
                 // Validar que el código tenga los campos necesarios
                 if (!codigo || 
@@ -341,8 +480,12 @@ class StorageManager {
                     !codigo.codigo_principal ||
                     typeof codigo.codigo_secundario !== 'string' ||
                     typeof codigo.codigo_principal !== 'string') {
-                    console.warn(`⚠️ Código secundario inválido en posición ${i}:`, codigo);
+                    console.warn(`⚠️ Código secundario inválido en posición ${globalIndex}:`, codigo);
                     errorCount++;
+                    completed++;
+                    if (completed === codigos.length) {
+                        resolve({ saved: savedCount, errors: errorCount });
+                    }
                     continue;
                 }
                 
@@ -355,37 +498,44 @@ class StorageManager {
                     
                     // Validar que los códigos normalizados no estén vacíos
                     if (!normalizedCodigo.codigo_secundario || !normalizedCodigo.codigo_principal) {
-                        console.warn(`⚠️ Código secundario vacío después de normalización en posición ${i}:`, normalizedCodigo);
+                        console.warn(`⚠️ Código secundario vacío después de normalización en posición ${globalIndex}:`, normalizedCodigo);
                         errorCount++;
+                        completed++;
+                        if (completed === codigos.length) {
+                            resolve({ saved: savedCount, errors: errorCount });
+                        }
                         continue;
                     }
                     
-                    await store.add(normalizedCodigo);
-                    savedCount++;
+                    const request = store.put(normalizedCodigo); // Usar PUT en lugar de ADD para manejar duplicados
                     
-                    // Log de progreso cada 10000 códigos
-                    if (savedCount % 10000 === 0) {
-                        console.log(`📊 Progreso: ${savedCount}/${codigos.length} códigos guardados`);
-                    }
+                    request.onsuccess = () => {
+                        savedCount++;
+                        completed++;
+                        if (completed === codigos.length) {
+                            resolve({ saved: savedCount, errors: errorCount });
+                        }
+                    };
+                    
+                    request.onerror = () => {
+                        console.error(`❌ Error al guardar código secundario ${globalIndex}:`, request.error, codigo);
+                        errorCount++;
+                        completed++;
+                        if (completed === codigos.length) {
+                            resolve({ saved: savedCount, errors: errorCount });
+                        }
+                    };
                     
                 } catch (addError) {
-                    console.error(`❌ Error al guardar código secundario ${i}:`, addError, codigo);
+                    console.error(`❌ Error al procesar código secundario ${globalIndex}:`, addError, codigo);
                     errorCount++;
+                    completed++;
+                    if (completed === codigos.length) {
+                        resolve({ saved: savedCount, errors: errorCount });
+                    }
                 }
             }
-
-            await this.waitForTransaction(transaction);
-            
-            console.log(`✅ Guardados ${savedCount} códigos secundarios (${errorCount} errores)`);
-            
-            if (errorCount > 0) {
-                console.warn(`⚠️ Se encontraron ${errorCount} códigos secundarios con problemas`);
-            }
-            
-        } catch (error) {
-            console.error('❌ Error al guardar códigos secundarios:', error);
-            throw error;
-        }
+        });
     }
 
     /**
@@ -618,28 +768,39 @@ class StorageManager {
             // PASO 2: Buscar MATCH EXACTO en códigos secundarios
             console.log('🎯 Paso 2: Buscando match exacto en códigos secundarios...');
             console.time('⏱️ Búsqueda EXACTA secundarios');
-            const codigoSecundario = await new Promise((resolve) => {
+            const codigosSecundariosExactos = await new Promise((resolve) => {
                 const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
                 const store = tx.objectStore('codigos_secundarios');
-                const req = store.get(normalizedSearchCode);
-                req.onsuccess = () => resolve(req.result || null);
-                req.onerror = () => resolve(null);
+                const index = store.index('codigo_secundario');
+                const req = index.getAll(normalizedSearchCode);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => resolve([]);
             });
             console.timeEnd('⏱️ Búsqueda EXACTA secundarios');
 
-            if (codigoSecundario) {
-                const productoPrincipalDeSecundario = await new Promise((resolve) => {
-                    const tx = this.db.transaction(['productos'], 'readonly');
-                    const store = tx.objectStore('productos');
-                    const req = store.get(codigoSecundario.codigo_principal);
-                    req.onsuccess = () => resolve(req.result || null);
-                    req.onerror = () => resolve(null);
-                });
+            if (codigosSecundariosExactos.length > 0) {
+                console.log(`✅ Encontrados ${codigosSecundariosExactos.length} código(s) secundario(s) exactos`);
+                
+                // Obtener productos principales de todos los códigos secundarios
+                const productosPrincipales = [];
+                for (const codigoSecundario of codigosSecundariosExactos) {
+                    const productoPrincipalDeSecundario = await new Promise((resolve) => {
+                        const tx = this.db.transaction(['productos'], 'readonly');
+                        const store = tx.objectStore('productos');
+                        const req = store.get(codigoSecundario.codigo_principal);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => resolve(null);
+                    });
 
-                if (productoPrincipalDeSecundario) {
-                    console.log('✅ MATCH EXACTO encontrado en código secundario:', codigoSecundario.codigo_secundario);
+                    if (productoPrincipalDeSecundario) {
+                        productosPrincipales.push(productoPrincipalDeSecundario);
+                    }
+                }
+                
+                if (productosPrincipales.length > 0) {
+                    console.log('✅ MATCH EXACTO encontrado en código secundario:', codigosSecundariosExactos[0].codigo_secundario);
                     console.timeEnd('⏱️ searchByCodeOptimized TOTAL');
-                    return [productoPrincipalDeSecundario];
+                    return productosPrincipales;
                 }
             }
             
@@ -662,10 +823,10 @@ class StorageManager {
             
             // Buscar en códigos secundarios (EAN)
             console.time('⏱️ Búsqueda PARCIAL secundarios');
-            const codigosSecundarios = await this.searchInCodigosSecundarios(normalizedCode, false);
+            const codigosSecundariosParciales = await this.searchInCodigosSecundarios(normalizedCode, false);
             console.timeEnd('⏱️ Búsqueda PARCIAL secundarios');
             
-            for (const codigoSec of codigosSecundarios) {
+            for (const codigoSec of codigosSecundariosParciales) {
                 if (!processedCodes.has(codigoSec.codigo_principal)) {
                     results.add(codigoSec.codigo_principal);
                     processedCodes.add(codigoSec.codigo_principal);
@@ -747,16 +908,17 @@ class StorageManager {
             try {
                 const normalizedSearchCode = codeQuery.toUpperCase();
                 
-                // 1. Búsqueda EXACTA (instantánea)
+                // 1. Búsqueda EXACTA usando índice (permite duplicados)
                 const tx = this.db.transaction(['codigos_secundarios'], 'readonly');
                 const store = tx.objectStore('codigos_secundarios');
-                const exactReq = store.get(normalizedSearchCode);
+                const index = store.index('codigo_secundario');
+                const exactReq = index.getAll(normalizedSearchCode);
                 
                 exactReq.onsuccess = () => {
-                    if (exactReq.result) {
+                    if (exactReq.result && exactReq.result.length > 0) {
                         // Encontrado exacto → TERMINAR
-                        console.log('✅ Código secundario encontrado exacto');
-                        resolve([exactReq.result]);
+                        console.log(`✅ ${exactReq.result.length} código(s) secundario(s) encontrado(s) exacto`);
+                        resolve(exactReq.result);
                     } else if (skipPartialSearch) {
                         // No encontrado exacto, pero ya había resultados en productos → NO buscar parcial
                         console.log('⚡ Omitiendo búsqueda parcial en secundarios (ya hay resultados)');
@@ -767,7 +929,8 @@ class StorageManager {
                         const matches = [];
                         const tx2 = this.db.transaction(['codigos_secundarios'], 'readonly');
                         const store2 = tx2.objectStore('codigos_secundarios');
-                        const cursorReq = store2.openCursor();
+                        const index2 = store2.index('codigo_secundario');
+                        const cursorReq = index2.openCursor();
                         
                         cursorReq.onsuccess = (event) => {
                             const cursor = event.target.result;

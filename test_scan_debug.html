@@ -86,6 +86,7 @@
             <h3>🔄 Forzar Sincronización</h3>
             <button onclick="forceSync()">Sincronizar Ahora</button>
             <button onclick="clearLocalData()">Limpiar Datos Locales</button>
+            <button onclick="checkDuplicates()">Verificar Duplicados</button>
             <div id="syncResult"></div>
         </div>
 
@@ -337,6 +338,52 @@
                     `;
                     console.error('Error al limpiar datos:', error);
                 }
+            }
+        }
+
+        async function checkDuplicates() {
+            const resultDiv = document.getElementById('syncResult');
+            resultDiv.innerHTML = '<p>🔍 Verificando duplicados en códigos secundarios...</p>';
+            
+            try {
+                const codigos = await window.storageManager.getSecondaryCodes();
+                console.log(`📊 Analizando ${codigos.length} códigos secundarios...`);
+                
+                const duplicates = window.storageManager.findDuplicateSecondaryCodes(codigos);
+                
+                if (duplicates.length > 0) {
+                    resultDiv.innerHTML = `
+                        <div class="info">
+                            <h4>ℹ️ Duplicados Encontrados (Normal)</h4>
+                            <p><strong>Total duplicados:</strong> ${duplicates.length}</p>
+                            <p><strong>Primeros 10 duplicados:</strong></p>
+                            <ul>
+                                ${duplicates.slice(0, 10).map(dup => 
+                                    `<li>Código: ${dup.codigo_secundario} (posición ${dup.index})</li>`
+                                ).join('')}
+                            </ul>
+                            <p><em>Los duplicados son normales - un mismo EAN puede corresponder a diferentes SKU. La base de datos ahora los maneja correctamente.</em></p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            <h4>✅ Sin Duplicados</h4>
+                            <p>No se encontraron códigos secundarios duplicados.</p>
+                        </div>
+                    `;
+                }
+                
+                console.log(`🔍 Análisis completado: ${duplicates.length} duplicados encontrados`);
+                
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="error">
+                        <h4>❌ Error al Verificar Duplicados</h4>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+                console.error('Error al verificar duplicados:', error);
             }
         }
 
